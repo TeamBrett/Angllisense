@@ -52,6 +52,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\ProjectNavigator.cs" />
+    <Compile Include="Services\TypeScriptParser.cs" />
     <Compile Include="SettingsCommand.cs" />
     <Compile Include="SettingsCommandPackage.cs" />
     <Compile Include="StatementCompletion.cs" />
