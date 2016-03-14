@@ -57,8 +57,8 @@ namespace Tests {
 
         [TestMethod]
         public void RemoveLineReturns_HandlesBoth() {
-            const string Input = "module test { class myClass { public testString = \n `Hello \r\nWorld`;}}";
-            const string Expected = "module test { class myClass { public testString = `Hello World`;}}";
+            const string Input = "module test { class myClass { public testString = \n `Hello \r\nWorld`; } }";
+            const string Expected = "module test { class myClass { public testString = `Hello World`; } }";
             var actual = TypeScriptParser.RemoveRedundantWhiteSpace(Input);
             Assert.AreEqual(Expected, actual);
         }
@@ -66,7 +66,7 @@ namespace Tests {
         [TestMethod]
         public void Parse_QuotedLineReturns_PreservesLineReturns() {
             const string Input = "module test { class myClass { public testString = \n `Hello \r\nWorld`;}}";
-            var model = TypeScriptParser.Parse(Input);
+            var model = new TypeScriptParser().Parse(Input);
             Assert.AreEqual("Hello \r\nWorld", model.QuotedStrings.First().Value);
         }
 
@@ -87,7 +87,29 @@ module Flemco.Test1 {
 module Flemco.Test2 {
 }
 ";
-            var model = TypeScriptParser.Parse(Input);
+            var model = new TypeScriptParser().Parse(Input);
+            Assert.AreEqual(1, model.Modules.Count);
+            var module = model.Modules.FirstOrDefault();
+
+            Assert.IsNotNull(module);
+            Assert.AreEqual("Flemco", module.Name);
+            Assert.AreEqual(2, module.Modules.Count);
+            Assert.AreEqual("Test1", module.Modules.First().Name);
+            Assert.AreEqual("Test2", module.Modules.Second().Name);
+        }
+
+        [TestMethod]
+        public void Parse_ReturnsNestedModules() {
+            const string Input = @"
+module Flemco {
+    module Test1 {
+    }
+}
+
+module Flemco.Test2 {
+}
+";
+            var model = new TypeScriptParser().Parse(Input);
             Assert.AreEqual(1, model.Modules.Count);
             var module = model.Modules.FirstOrDefault();
 
@@ -109,8 +131,8 @@ module Flemco {
     }
 }
 ";
-            var actual = TypeScriptParser.RemoveRedundantWhiteSpace(Input);
-            var model = TypeScriptParser.Parse(Input);
+
+            var model = new TypeScriptParser().Parse(Input);
             Assert.AreEqual(1, model.Modules.Count);
             var module = model.Modules.FirstOrDefault();
             Assert.AreEqual(2, module.Classes.Count);

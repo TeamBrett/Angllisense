@@ -25,7 +25,7 @@ namespace Angllisense.Services {
                     var item = FlattenProjectItems(projectItem);
                     if (item != null && item.Name.EndsWith(".ts")) {
                         var typeScriptFile = new TypeScriptFile { RawText = File.ReadAllText(item.Document.FullName), };
-                        typeScriptFile.Model = TypeScriptParser.Parse(typeScriptFile.RawText);
+                        typeScriptFile.Model = new TypeScriptParser().Parse(typeScriptFile.RawText);
                         projectItems.Add(typeScriptFile);
                     }
                 }

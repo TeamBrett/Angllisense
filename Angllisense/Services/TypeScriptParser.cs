@@ -1,8 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.Configuration;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Angllisense.Services {
     [Flags]
@@ -21,6 +21,12 @@ namespace Angllisense.Services {
         Function
     }
 
+    public enum AccessModifier {
+        Public,
+        Private,
+        Protected,
+    }
+
     public class TypeScriptCodeModel {
         public ICollection<TypeScriptParser.QuotedString> QuotedStrings { get; set; } = new List<TypeScriptParser.QuotedString>();
         public ICollection<Module> Modules { get; set; } = new List<Module>();
@@ -28,7 +34,7 @@ namespace Angllisense.Services {
 
     public class Module {
         public string Name { get; set; }
-        public ICollection<Module> Modules { get; set; } = new List<Module>();
+        public List<Module> Modules { get; set; } = new List<Module>();
         public ICollection<Class> Classes { get; set; } = new List<Class>();
     }
 
@@ -39,14 +45,17 @@ namespace Angllisense.Services {
         public bool IsExported { get; set; }
     }
 
-    public class Field {
+    public class Attribute {
         public string Name { get; set; }
+        public AccessModifier AccessModifier;
+    }
+
+    public class Field : Attribute {
         public Types Types { get; set; }
         public Class ObjectType { get; set; }
     }
 
-    public class Function {
-        public string Name { get; set; }
+    public class Function : Attribute {
         public Types ReturnTypes { get; set; }
 
         public IOrderedEnumerable<Argument> OrderedEnumerable { get; set; }
@@ -58,127 +67,246 @@ namespace Angllisense.Services {
         public Class ObjectType { get; set; }
     }
 
-    public static class TypeScriptParser {
-        public static TypeScriptCodeModel Parse(string code) {
-            var model = new TypeScriptCodeModel();
+    public class TypeScriptParser {
+        private IList<string> tokens;
+        private int i;
+        private TypeScriptCodeModel model = new TypeScriptCodeModel();
+
+        public TypeScriptCodeModel Parse(string code) {
 
             var quoteResult = ReplaceQuotedStrings(code);
-            model.QuotedStrings = quoteResult.Item2;
+            this.model.QuotedStrings = quoteResult.Item2;
             code = quoteResult.Item1;
+
+            code = BreakOutCompressedCharacters(code);
 
             code = RemoveRedundantWhiteSpace(code);
 
-            var tokens = code.Split(' ').Where(token => !string.IsNullOrWhiteSpace(token)).ToList();
+            this.tokens = code.Split(' ').Where(token => !string.IsNullOrWhiteSpace(token)).ToList();
 
-            model.Modules = GetModules(tokens);
+            this.model.Modules = this.GetModules();
 
-            return model;
+            return this.model;
         }
 
-        public static ICollection<Module> GetModules(IList<string> tokens) {
-            var root = new Module();
-            int i = 0;
-            while (i < tokens.Count) {
-                var token = tokens[i++];
+        public ICollection<Module> GetModules(Module root = null) {
+            root = root ?? new Module();
+            while (this.i < this.tokens.Count) {
+                if (this.HasOptional(Tokens.EndCurly)) {
+                    break; // end of module
+                }
 
-                if (token.ToLower() == "module") {
-                    var @namespace = tokens[i++];
+                this.AssertCurrentIs(Tokens.Module);
 
-                    var namespacePieces = @namespace.Split('.');
-                    Module module = root;
-                    foreach (var piece in namespacePieces) {
-                        var nextModule = module.Modules.FirstOrDefault(x => x.Name == piece);
-                        if (nextModule != null) {
-                            module = nextModule;
-                            continue;
-                        }
+                var module = this.GetModule(root);
 
-                        nextModule = new Module { Name = piece };
-                        module.Modules.Add(nextModule);
-                        module = nextModule;
+                this.AssertCurrentIs(Tokens.StartCurly);
+
+                if (this.HasOptional(Tokens.EndCurly)) {
+                    continue; // end of module
+                }
+
+                if (this.NextIs(Tokens.Module)) {
+                    // nested module
+                    module.Modules.AddRange(this.GetModules(root));
+                    if (this.HasOptional(Tokens.EndCurly)) {
+                        continue; // end of module
                     }
+                }
 
-                    token = tokens[i++];
-                    if (token != "{") {
-                        throw new Exception("Expected {.  Got " + token);
-                    }
+                if (this.NextIsClass()) {
+                    module.Classes = this.GetClasses();
+                }
 
-                    token = Peek(tokens, i);
-                    if (token == "}") {
-                        Pop(tokens, ref i);
-                        continue;
-                    }
-
-                    module.Classes = GetClasses(tokens, ref i);
-
-                    token = tokens[i++];
-                    if (token != "}") {
-                        throw new Exception("Expected }.  Got " + token);
-                    }
-                } else {
-                    throw new Exception("Expected module.  Got " + token);
+                if (this.HasOptional(Tokens.EndCurly)) {
+                    continue; // end of module
                 }
             }
 
             return root.Modules;
         }
 
-        private static string Peek(IList<string> tokens, int i) {
-            return tokens[i];
-        }
-
-        private static string Pop(IList<string> tokens, ref int i) {
-            return tokens[i++];
-        }
-
-        public static ICollection<Class> GetClasses(IList<string> tokens, ref int i) {
-            var classes = new List<Class>();
-            while(i < tokens.Count) {
-                var token = Peek(tokens, i);
-                if (token == "}") {
-                    break;
-                }
-
-                token = Pop(tokens, ref i);
-
-                var @class = new Class();
-                if (token == "export") {
-                    @class.IsExported = true;
-                    token = Pop(tokens, ref i);
-                }
-
-                if (token.ToLower() != "class") {
-                    throw new Exception("Expected class.  Got " + token);
-                }
-
-                @class.Name = tokens[i++];
-                classes.Add(@class);
-
-                token = tokens[i++];
-                if (token != "{") {
-                    throw new Exception("Expected {.  Got " + token);
-                }
-
-                token = Peek(tokens, i);
-                if (token == "}") {
-                    Pop(tokens, ref i);
+        private Module GetModule(Module root) {
+            string @namespace = this.Pop();
+            var namespaces = @namespace.Split('.');
+            var module = root;
+            foreach (string piece in namespaces) {
+                var nextModule = module.Modules.FirstOrDefault(x => x.Name == piece);
+                if (nextModule != null) {
+                    module = nextModule;
                     continue;
                 }
 
-                @class.Fields = GetFields(tokens, i);
+                nextModule = new Module { Name = piece };
+                module.Modules.Add(nextModule);
+                module = nextModule;
+            }
 
-                token = tokens[i++];
-                if (token != "}") {
-                    throw new Exception("Expected }.  Got " + token);
+            return module;
+        }
+
+        private bool NextIsClass() {
+            return this.NextIs(Tokens.Class) || (this.NextIs(Tokens.Export) && this.tokens[this.i + 1] == Tokens.Class);
+        }
+
+        public ICollection<Class> GetClasses() {
+            var classes = new List<Class>();
+            while(this.i < this.tokens.Count) {
+                if (this.CurrentIs(Tokens.EndCurly)) {
+                    break; // end of module, save token for module processor
                 }
+
+                var @class = new Class();
+
+                @class.IsExported = this.HasOptional(Tokens.Export);
+
+                this.AssertCurrentIs(Tokens.Class);
+
+                @class.Name = this.Pop();
+
+                classes.Add(@class);
+
+                this.AssertCurrentIs(Tokens.StartCurly);
+
+                if (this.HasOptional(Tokens.EndCurly)) {
+                    continue; // end of class
+                }
+
+                @class.Fields = this.GetFields();
+                @class.Functions = this.GetFunctions();
+
+                this.AssertCurrentIs(Tokens.EndCurly); // end of class
             }
 
             return classes;
         }
 
-        public static ICollection<Field> GetFields(IList<string> tokens, int i) {
+        public AccessModifier GetAccessModifier() {
+            if (this.HasOptional(Tokens.Public)) {
+                return AccessModifier.Public;
+            }
+
+            if (this.HasOptional(Tokens.Private)) {
+                return AccessModifier.Private;
+            }
+
+            if (this.HasOptional(Tokens.Protected)) {
+                return AccessModifier.Protected;
+            }
+
+            return AccessModifier.Public;
+        }
+
+        public Types GetTypes(string type) {
+            if (type == "string") {
+                return Types.String;
+            }
+
+            return Types.Any;
+        }
+
+        public ICollection<Function> GetFunctions() {
+            return new List<Function>();
+        }
+
+        public ICollection<Field> GetFields() {
+            var field = new Field();
+            field.AccessModifier = this.GetAccessModifier();
+            var name = this.Pop();
+            string type = string.Empty;
+            string value = string.Empty;
+
+            if (name.Contains(":")) {
+                var nameType = name.Split(':');
+                if (nameType.Length > 2) {
+                    throw new Exception($"Do not know how to handle \"{name}\"");
+                }
+
+                name = nameType[0];
+                type = nameType[1];
+            }
+
+            if (this.HasOptional("=")) {
+                value = this.GetName(this.Pop());
+            }
+
+            if (type.Contains("=")) {
+                var assignment = type.Split('=');
+                type = assignment[0];
+            }
+
+            this.HasOptional(Tokens.EndStatement);
+
+            field.Name = this.GetName(name);
+            field.Types = this.GetTypes(type);
+
             return new List<Field>();
-        } 
+        }
+
+        private string GetName(string name) {
+            var quotedName = this.model.QuotedStrings.FirstOrDefault(x => x.Id == name);
+            if (quotedName != null) {
+                return quotedName.Value;
+            }
+
+            return name;
+        }
+
+        private bool HasOptional(string token) {
+            var next = this.Peek();
+            if (next != token) {
+                return false;
+            }
+
+            this.DiscardCurrent();
+            return true;
+        }
+
+        private string Peek() {
+            if (this.tokens.Count == this.i) {
+                return string.Empty;
+            }
+
+            return this.tokens[this.i];
+        }
+
+        private bool NextIs(string expected) {
+            return this.Peek() == expected;
+        }
+
+        private void AssertCurrentIs(string expected) {
+            var actual = this.Pop();
+            if (actual != expected) {
+                var restOfCode = actual;
+                for (; this.i < this.tokens.Count; this.i++) {
+                    restOfCode += " " + this.tokens[this.i];
+                }
+                throw new Exception("Expected \"" + expected + "\".  Got \"" + restOfCode + "\"");
+            }
+        }
+
+        private bool CurrentIs(string token) {
+            return this.Peek() == token;
+        }
+
+        private void DiscardCurrent() {
+            this.i++;
+        }
+
+        private string Pop() {
+            if (this.tokens.Count == this.i) {
+                return this.tokens[this.i - 1];
+            }
+
+            return this.tokens[this.i++];
+        }
+
+        public static string BreakOutCompressedCharacters(string code) {
+            code = Regex.Replace(code, @"\s*[}]\s*", " } ");
+            code = Regex.Replace(code, @"\s*[{]\s*", " { ");
+            code = Regex.Replace(code, @"\s*[;]\s*", " ; ");
+            return code;
+        }
 
         public static  string RemoveRedundantWhiteSpace(string code) {
             var buffer = new char[code.Length];
@@ -235,14 +363,16 @@ namespace Angllisense.Services {
                     continue;
                 }
 
+                var id = string.Format(stringIdentifierFormat, stringIdentifier, quotedStrings.Count);
+
                 var quotedString = new QuotedString {
-                    Id = quotedStrings.Count,
+                    Id = id,
                     Value = code.Substring(startIndex + 1, i - startIndex - 1)
                 };
 
                 quotedStrings.Add(quotedString);
 
-                builder.Append(string.Format(stringIdentifierFormat, stringIdentifier, quotedString.Id));
+                builder.Append(id);
 
                 startQuote = null;
                 startIndex = i + 1;
@@ -253,8 +383,43 @@ namespace Angllisense.Services {
             return new Tuple<string, List<QuotedString>>(builder.ToString(), quotedStrings);
         }
 
+        private static class Tokens {
+            public const string StartCurly = "{";
+            public const string EndCurly = "}";
+
+            public const string GenericStart = "<";
+            public const string GenericEnd = ">";
+
+            public const string ArrayStart = "[";
+            public const string ArrayEnd = "]";
+
+            public const string EndStatement = ";";
+            public const string Assignment = "=";
+            public const string Truthy = "==";
+            public const string Equal = "===";
+            public const string Falsy = "!=";
+            public const string NotEqual = "!==";
+            public const string LessThan = "<";
+            public const string LessOrEQual = "<";
+            public const string GreaterThan = ">";
+            public const string GreaterOrEqual = ">=";
+            public const string Multiply = "*";
+            public const string Divide = "/";
+
+            public const string Module = "module";
+            public const string Class = "class";
+            public const string Export = "export";
+            public const string Extends = "export";
+            public const string Implements = "export";
+            public const string Public = "public";
+            public const string Private = "private";
+            public const string Protected = "protected";
+            public const string Abstract = "abstract";
+            public const string Static = "static";
+        }
+
         public class QuotedString {
-            public int Id { get; set; }
+            public string Id { get; set; }
             public string Value { get; set; }
         }
     }
